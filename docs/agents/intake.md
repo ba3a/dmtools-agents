@@ -22,5 +22,7 @@ attachments and links do not exist there and are skipped.
 - Re-runs are safe: each sub-issue carries a hidden marker of its entry, and an entry whose sub-issue
   already exists (by marker, else by title) is reused. A parent is labeled planned only when every
   entry exists, so after a partial failure the agent is simply run again.
-- Requirement: no runtime ships a sub-issue tool yet, so sub-issues are read and attached through the
-  REST API with the GitHub CLI — the runner needs `gh` installed and authenticated (`GH_TOKEN`).
+- Sub-issues are read and attached with the runtime's `github_list_sub_issues` / `github_add_sub_issue`
+  tools when it ships them (Java runtime), which follow its GitHub configuration (base URL, token).
+  Otherwise (Dart runtime) they go through the REST API with the GitHub CLI — the runner then needs
+  `gh` installed and authenticated (`GH_TOKEN`).

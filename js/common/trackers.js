@@ -41,10 +41,13 @@
  * Parent → child: createTicketWithParent works on every provider (on GitHub
  * the child becomes a SUB-ISSUE of the parent). listChildTickets(parentKey)
  * returns the children in the parent's order and is GitHub-only (sub-issues);
- * jira/ado throw. Both GitHub calls go to the REST API through `gh api`:
- * no runtime ships a sub-issue tool yet, so the runner needs the GitHub CLI
- * installed and authenticated (GH_TOKEN). Without it the calls fail with an
- * error that says so, instead of a parse error on the shell's output.
+ * jira/ado throw. Both GitHub calls prefer the runtime's sub-issue tools
+ * (github_add_sub_issue, github_list_sub_issues — Java runtime), which use the
+ * runtime's own GitHub configuration (base URL, token). On runtimes without
+ * them (Dart catalog) they fall back to the REST API through `gh api`, which
+ * needs the GitHub CLI installed and authenticated (GH_TOKEN) on the runner;
+ * without it the calls fail with an error that says so, instead of a parse
+ * error on the shell's output.
  */
 
 const { STATUSES, LABELS, stageLabel: stageLabelOf } = require('../config.js');
@@ -662,19 +665,20 @@ function createTracker(config, customParams) {
         return t ? t.key : null;
     }
 
-    // ── github sub-issues (REST via gh) ───────────────────────────────────
+    // ── github sub-issues (runtime tools, REST via gh as fallback) ────────
     //
     // GitHub models a parent → child relation as SUB-ISSUES (ordered; the
-    // order is the parent's list order). No dmtools runtime ships a sub-issue
-    // tool, so these two calls go to the REST API through `gh api`, the way
-    // the SM's own probes already do (smProvider.js). The command lines carry
-    // no shell metacharacters — cli_execute_command rejects them, so query
-    // parameters go as -F fields of an explicit GET, never as '&' in the path.
+    // order is the parent's list order). Prefer the runtime's sub-issue tools
+    // when it exposes them (Java runtime): they follow the runtime's GitHub
+    // configuration (base URL, token from dmtools.env), so GHE works too.
     //
-    // Requirement: the GitHub CLI (`gh`), installed and authenticated
-    // (GH_TOKEN) on the runner. It does not follow the runtime's GitHub
-    // configuration (base URL, token from dmtools.env) — replace these calls
-    // with runtime tools once the runtimes ship them.
+    // Fallback for runtimes without them (Dart catalog): the REST API through
+    // `gh api`, the way the SM's own probes already do (smProvider.js). The
+    // command lines carry no shell metacharacters — cli_execute_command
+    // rejects them, so query parameters go as -F fields of an explicit GET,
+    // never as '&' in the path. Requirement: the GitHub CLI (`gh`), installed
+    // and authenticated (GH_TOKEN) on the runner; it does not follow the
+    // runtime's GitHub configuration.
 
     var SUB_ISSUE_PAGE_SIZE = 100;
     // GitHub caps a parent at 100 sub-issues; the guard only bounds a misbehaving API.
@@ -717,9 +721,18 @@ function createTracker(config, customParams) {
         if (!child || !child.id) {
             throw new Error('trackers: github_create_issue returned no issue id for "' + title + '"');
         }
-        githubRestViaGh('POST',
-            'repos/' + parent.owner + '/' + parent.repo + '/issues/' + parent.number + '/sub_issues',
-            ['sub_issue_id=' + child.id]);
+        if (typeof github_add_sub_issue === 'function') {
+            github_add_sub_issue({
+                owner: parent.owner,
+                repo: parent.repo,
+                number: parent.number,
+                subIssueId: child.id
+            });
+        } else {
+            githubRestViaGh('POST',
+                'repos/' + parent.owner + '/' + parent.repo + '/issues/' + parent.number + '/sub_issues',
+                ['sub_issue_id=' + child.id]);
+        }
         return child.key;
     }
 
@@ -738,12 +751,28 @@ function createTracker(config, customParams) {
     function githubListChildTickets(parentKey) {
         var parent = githubParentArgs(parentKey);
         var out = [];
-        for (var page = 1; page <= SUB_ISSUE_MAX_PAGES; page++) {
-            var list = githubSubIssuePage(parent, parentKey, page);
+        function collect(list) {
             list.forEach(function (raw) {
                 var t = normalizeTicket(raw);
                 if (t) out.push(t);
             });
+        }
+        if (typeof github_list_sub_issues === 'function') {
+            // The runtime tool follows the pagination itself and returns one list.
+            var all = _parseJson(github_list_sub_issues({
+                owner: parent.owner,
+                repo: parent.repo,
+                number: parent.number
+            }));
+            if (!Array.isArray(all)) {
+                throw new Error('trackers: unexpected sub_issues response for ' + parentKey);
+            }
+            collect(all);
+            return out;
+        }
+        for (var page = 1; page <= SUB_ISSUE_MAX_PAGES; page++) {
+            var list = githubSubIssuePage(parent, parentKey, page);
+            collect(list);
             if (list.length < SUB_ISSUE_PAGE_SIZE) break;
         }
         return out;
