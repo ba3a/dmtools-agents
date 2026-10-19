@@ -18,6 +18,7 @@
 // leaking the same sloppy-mode global, but breaking isolated per-file runs).
 var commentMarkupModule = loadModule('js/common/commentMarkup.js',
     makeRequire({ './ticketKeyShapes.js': loadModule('js/common/ticketKeyShapes.js') }));
+var ticketKeyShapesModule = loadModule('js/common/ticketKeyShapes.js');
 var gitStagingModule = loadModule('js/common/gitStaging.js');
 
 // Real githubHelpers (only its own deps stubbed) — pushReworkChanges requires
@@ -47,6 +48,7 @@ var githubHelpersModule = loadModule(
 
 function makeOutputFiles(fileMap) {
     return loadModule('js/common/outputFiles.js', makeRequire({
+            './common/ticketKeyShapes.js': ticketKeyShapesModule,
             './common/commentMarkup.js': commentMarkupModule,
             './common/reworkLoopGuard.js': loadModule('js/common/reworkLoopGuard.js')
         }), {
@@ -128,6 +130,7 @@ function loadPushReworkChangesModule(fileMap, opts) {
             './cacheToReleases.js': { cacheSessionLog: noop },
             './common/tokenUsageComment.js': { postTokenUsageComments: noop }
         ,
+            './common/ticketKeyShapes.js': ticketKeyShapesModule,
             './common/commentMarkup.js': commentMarkupModule,
             './common/reworkLoopGuard.js': loadModule('js/common/reworkLoopGuard.js')
         }),
@@ -535,6 +538,7 @@ function loadPushReworkChangesForCommitAndPush(mocks) {
             './cacheToReleases.js': {},
             './common/tokenUsageComment.js': { postTokenUsageComments: function() {} }
         ,
+            './common/ticketKeyShapes.js': ticketKeyShapesModule,
             './common/commentMarkup.js': commentMarkupModule,
             './common/reworkLoopGuard.js': loadModule('js/common/reworkLoopGuard.js')
         }),
@@ -862,6 +866,7 @@ function loadPushReworkChangesForAction(mocks, opts) {
             './cacheToReleases.js': { action: function() {} },
             './common/tokenUsageComment.js': { postTokenUsageComments: function() {} }
         ,
+            './common/ticketKeyShapes.js': ticketKeyShapesModule,
             './common/commentMarkup.js': commentMarkupModule,
             './common/reworkLoopGuard.js': loadModule('js/common/reworkLoopGuard.js')
         }),
@@ -941,6 +946,68 @@ suite('pushReworkChanges.action — rework_setup_failed.md guard (#310)', functi
             loaded.jiraMoveToStatusCalls.some(function(c) { return c.statusName === 'In Review'; }),
             'should still move the ticket to In Review as before'
         );
+    });
+});
+
+suite('pushReworkChanges.action — input folder from params.inputFolderPath', function() {
+
+    // On a GitHub-tracker deployment dmtools names the input folder after the router key
+    // (input/gh-5) while the ticket key is owner/repo#5. Reading input/<ticketKey>/pr_info.md
+    // found nothing, so a finished rework was refused at push time and lost.
+    function strictFileRead(folder) {
+        return function(args) {
+            var p = args && (args.path || args);
+            if (p === folder + '/rework_setup_failed.md') throw new Error('File does not exist');
+            if (p === folder + '/pr_info.md') return '**Branch**: `bug/PROJ-123` → `develop`';
+            return null;
+        };
+    }
+
+    test('reads pr_info.md from the folder dmtools created, not from input/<ticketKey>', function() {
+        var loaded = loadPushReworkChangesForAction({ file_read: strictFileRead('input/gh-123') });
+
+        var result = loaded.mod.action({
+            ticket: { key: 'PROJ-123', fields: { labels: [] } },
+            inputFolderPath: '/home/runner/work/repo/repo/input/gh-123',
+            response: 'Conflicts resolved.'
+        });
+
+        assert.equal(result.success, true, result.error);
+        assert.equal(result.branchName, 'bug/PROJ-123');
+        assert.ok(
+            loaded.cliCommands.filter(function(c) { return c.indexOf('git push -u origin bug/PROJ-123') !== -1; }).length >= 1,
+            'the rework is pushed to the PR branch'
+        );
+    });
+
+    test('derives input/gh-N from a GitHub key when the runtime passes no inputFolderPath', function() {
+        // The Java runtime passes inputFolderPath to pre-CLI actions only; the post-action must
+        // find the folder the runtime named after the router key on its own.
+        var loaded = loadPushReworkChangesForAction({ file_read: strictFileRead('input/gh-5') });
+
+        loaded.mod.action({
+            ticket: { key: 'acme/widgets#5', fields: { labels: [] } },
+            response: 'Conflicts resolved.'
+        });
+
+        // The PR-lookup that follows the push needs a PR fixture for this key; what this test
+        // pins is that the PR branch was read from input/gh-5 and the rework was pushed.
+        assert.ok(
+            loaded.cliCommands.filter(function(c) { return c.indexOf('git push -u origin bug/PROJ-123') !== -1; }).length >= 1,
+            'the rework is pushed to the PR branch read from input/gh-5/pr_info.md'
+        );
+    });
+
+    test('falls back to input/<ticketKey> for a non-GitHub key when the runtime passes no inputFolderPath', function() {
+        var loaded = loadPushReworkChangesForAction({ file_read: strictFileRead('input/PROJ-123') });
+
+        var result = loaded.mod.action({
+            ticket: { key: 'PROJ-123', fields: { labels: [] } },
+            response: 'Conflicts resolved.'
+        });
+
+        assert.equal(result.success, true, result.error);
+        assert.equal(result.branchName, 'bug/PROJ-123');
     });
 });
 
@@ -1041,6 +1108,7 @@ function loadPushReworkChangesForResumeSafety(mocks, feedbackLoopOverrides) {
             './cacheToReleases.js': { action: function() {} },
             './common/tokenUsageComment.js': { postTokenUsageComments: function() {} }
         ,
+            './common/ticketKeyShapes.js': ticketKeyShapesModule,
             './common/commentMarkup.js': commentMarkupModule,
             './common/reworkLoopGuard.js': loadModule('js/common/reworkLoopGuard.js')
         }),
