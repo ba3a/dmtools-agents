@@ -782,10 +782,33 @@ function finalizeIntakeTicket(ctx, results, params, planned) {
     postTokenUsage(ctx, params);
 }
 
+/** The run's customParams: jobParams.customParams first, then the top-level ones. */
+function customParamsOf(params) {
+    var p = params || {};
+    return (p.jobParams && p.jobParams.customParams) || p.customParams || {};
+}
+
+/** The project config: it carries the repository that GitHub issue keys resolve against. */
+function projectConfigOf(params) {
+    var p = params || {};
+    return configLoader.loadProjectConfig(p.jobParams || p) || {};
+}
+
+/**
+ * Dependency and integration links. On GitHub the plan is recorded instead
+ * (plan comments + planned labels).
+ * @returns {boolean} true when a GitHub plan was recorded
+ */
+function linkPass(stories, ctx, state) {
+    if (ctx.github) return recordGithubPlans(stories, ctx, state);
+    linkBlockedByPass(stories, state.keyMap);
+    linkIntegrationsPass(stories, state.keyMap);
+    return false;
+}
+
 function action(params) {
-    var customParams = (params && params.jobParams && params.jobParams.customParams) || (params && params.customParams) || {};
-    // The project config carries the repository that GitHub issue keys resolve against.
-    var projectConfig = configLoader.loadProjectConfig((params && params.jobParams) || params || {}) || {};
+    var customParams = customParamsOf(params);
+    var projectConfig = projectConfigOf(params);
     tracker = trackersModule.createTracker(projectConfig, customParams);
     try {
         var ctx = initActionContext(params, projectConfig, customParams);
@@ -810,13 +833,7 @@ function action(params) {
         createStoriesPass(stories, ctx, state);
 
         // 5. Dependency and integration links (GitHub: plan comments + planned labels)
-        var planned = false;
-        if (ctx.github) {
-            planned = recordGithubPlans(stories, ctx, state);
-        } else {
-            linkBlockedByPass(stories, state.keyMap);
-            linkIntegrationsPass(stories, state.keyMap);
-        }
+        var planned = linkPass(stories, ctx, state);
 
         // 6-11. Finalize the source ticket
         finalizeIntakeTicket(ctx, state.results, params, planned);

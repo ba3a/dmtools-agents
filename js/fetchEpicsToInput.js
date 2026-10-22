@@ -22,12 +22,26 @@ var configLoader = require("./configLoader.js");
  * so the agent does not plan them again; existing_epics.json is empty.
  */
 function writeGithubSubIssues(tracker, folder, issueKey) {
-    var stories = tracker.listChildTickets(issueKey).map(function (c) {
-        return { key: c.key, summary: c.title || '', description: c.description || '', status: c.status || '', parent: issueKey };
-    });
-    file_write(folder + '/existing_epics.json', '{"epics":[]}');
-    file_write(folder + '/existing_stories.json', '{"stories":' + JSON.stringify(stories, null, 2) + '}');
-    console.log('Wrote ' + stories.length + ' existing sub-issue(s) of ' + issueKey + ' to ' + folder);
+    try {
+        var stories = tracker.listChildTickets(issueKey).map(function (c) {
+            return { key: c.key, summary: c.title || '', description: c.description || '', status: c.status || '', parent: issueKey };
+        });
+        file_write(folder + '/existing_epics.json', '{"epics":[]}');
+        file_write(folder + '/existing_stories.json', '{"stories":' + JSON.stringify(stories, null, 2) + '}');
+        console.log('Wrote ' + stories.length + ' existing sub-issue(s) of ' + issueKey + ' to ' + folder);
+    } catch (subIssueError) {
+        console.error('Failed to fetch sub-issues, continuing without files:', subIssueError);
+    }
+}
+
+/**
+ * The tracker for this run. The project config carries the repository that
+ * GitHub issue keys resolve against.
+ */
+function createRunTracker(params) {
+    var customParams = (params.jobParams && params.jobParams.customParams) || params.customParams || {};
+    var projectConfig = configLoader.loadProjectConfig(params.jobParams || params) || {};
+    return trackersModule.createTracker(projectConfig, customParams);
 }
 
 /**
@@ -47,18 +61,8 @@ function action(params) {
         const folder = params.inputFolderPath;
         var ticketKey = folder ? folder.split('/').pop() : '';
         var project = ticketKey ? ticketKey.split('-')[0] : '';
-        var customParams = (params.jobParams && params.jobParams.customParams) || params.customParams || {};
-        // The project config carries the repository that GitHub issue keys resolve against.
-        var projectConfig = configLoader.loadProjectConfig(params.jobParams || params) || {};
-        var tracker = trackersModule.createTracker(projectConfig, customParams);
-        if (tracker.provider() === 'github') {
-            try {
-                writeGithubSubIssues(tracker, folder, ticketKey);
-            } catch (subIssueError) {
-                console.error('Failed to fetch sub-issues, continuing without files:', subIssueError);
-            }
-            return;
-        }
+        var tracker = createRunTracker(params);
+        if (tracker.provider() === 'github') return writeGithubSubIssues(tracker, folder, ticketKey);
         console.log('Fetching existing epics for project ' + project + '...');
 
         try {

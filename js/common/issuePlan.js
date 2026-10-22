@@ -212,6 +212,11 @@ function allClosed(keys, isKeyClosed) {
     return keys.every(function (k) { return isKeyClosed(k); });
 }
 
+// The recorded blockers of the planned parent itself.
+function parentBlockers(plan) {
+    return (plan && plan.blockedBy) || [];
+}
+
 // Open leaf sub-issues already in development (carry the dev label).
 function activeChildren(open, cfg) {
     return open.filter(function (c) { return hasLabel(c, cfg.devLabel); });
@@ -247,7 +252,7 @@ function decideNextSteps(children, plan, cfg, isKeyClosed) {
     var list = Array.isArray(children) ? children : [];
     var total = list.length;
     if (total === 0) return { type: 'empty', start: [], total: 0 };
-    if (!allClosed((plan && plan.blockedBy) || [], isKeyClosed)) return { type: 'blocked', start: [], total: total };
+    if (!allClosed(parentBlockers(plan), isKeyClosed)) return { type: 'blocked', start: [], total: total };
     var open = list.filter(function (c) { return !isClosed(c); });
     if (open.length === 0) return { type: 'complete', start: [], total: total };
     var slots = cfg.maxParallel - activeChildren(open, cfg).length;
