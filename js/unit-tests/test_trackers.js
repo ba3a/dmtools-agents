@@ -1107,8 +1107,14 @@ suite('trackers.js extended operations — github provider', function () {
         assert.equal(t.fieldCode('p', 'n'), null);
     });
 
+    // The sub-issue runtime tools are shadowed with null unless a test
+    // provides them, so the gh fallback tests stay valid on a runtime that
+    // ships github_add_sub_issue / github_list_sub_issues.
     function githubTracker(mocks) {
-        return loadTrackers(mocks).createTracker({
+        return loadTrackers(Object.assign({
+            github_add_sub_issue: null,
+            github_list_sub_issues: null
+        }, mocks)).createTracker({
             tracker: { provider: 'github' },
             repository: { owner: 'acme', repo: 'widgets' }
         });
@@ -1205,6 +1211,46 @@ suite('trackers.js extended operations — github provider', function () {
     test('listChildTickets throws on a response that is not a list', function () {
         var cli = recorder('cli_execute_command', '{"message": "Not Found"}');
         assert.throws(function () { githubTracker({ cli_execute_command: cli }).listChildTickets('12'); });
+    });
+
+    test('createTicketWithParent prefers the runtime github_add_sub_issue tool over gh', function () {
+        var ghCreate = recorder('github_create_issue', { id: 9001, number: 43, title: 'Step 1', state: 'open' });
+        var addSub = recorder('github_add_sub_issue', '{"number": 12}');
+        var cli = recorder('cli_execute_command', '{}');
+        var key = githubTracker({ github_create_issue: ghCreate, github_add_sub_issue: addSub, cli_execute_command: cli })
+            .createTicketWithParent(null, 'Story', 'Step 1', 'Part of #12', 'acme/widgets#12');
+        assert.equal(key, 'acme/widgets#43');
+        assert.deepEqual(addSub.calls[0], { owner: 'acme', repo: 'widgets', number: 12, subIssueId: '9001' });
+        assert.equal(cli.calls.length, 0, 'gh is not used when the runtime tool exists');
+    });
+
+    test('listChildTickets prefers the runtime github_list_sub_issues tool over gh', function () {
+        var listSub = recorder('github_list_sub_issues', JSON.stringify([
+            { id: 1, number: 13, title: 'Step 1', state: 'closed', labels: [{ name: 'agent:dev' }] },
+            { id: 2, number: 14, title: 'Step 2', state: 'open', labels: [] }
+        ]));
+        var cli = recorder('cli_execute_command', '[]');
+        var children = githubTracker({ github_list_sub_issues: listSub, cli_execute_command: cli })
+            .listChildTickets('acme/widgets#12');
+        assert.deepEqual(listSub.calls[0], { owner: 'acme', repo: 'widgets', number: 12 });
+        assert.equal(listSub.calls.length, 1, 'the runtime tool follows the pagination itself');
+        assert.equal(cli.calls.length, 0, 'gh is not used when the runtime tool exists');
+        assert.equal(children.length, 2);
+        assert.equal(children[0].key, 'acme/widgets#13');
+        assert.equal(children[0].status, 'closed');
+        assert.equal(children[1].key, 'acme/widgets#14');
+    });
+
+    test('listChildTickets accepts an already-parsed list from the runtime tool', function () {
+        var listSub = recorder('github_list_sub_issues', [{ id: 1, number: 13, state: 'open' }]);
+        var children = githubTracker({ github_list_sub_issues: listSub }).listChildTickets('12');
+        assert.equal(children.length, 1);
+        assert.equal(children[0].key, 'acme/widgets#13');
+    });
+
+    test('listChildTickets throws when the runtime tool returns something that is not a list', function () {
+        var listSub = recorder('github_list_sub_issues', '{"message": "Not Found"}');
+        assert.throws(function () { githubTracker({ github_list_sub_issues: listSub }).listChildTickets('12'); });
     });
 
     test('listChildTickets is GitHub-only: jira and ado throw a provider-named error', function () {
