@@ -22,6 +22,7 @@
  * Project override (.dmtools/config.js), per-agent override (customParams):
  *   issuePlanning: {
  *     devLabel:     'agent:dev',   // label that starts the dev leg of an issue
+ *     devAssignee:  null,          // optional assignee login (e.g. 'ai-teammate') when starting a sub-issue
  *     plannedLabel: 'ai_planned',  // marks a parent whose sub-issues are sequenced
  *     maxParallel:  1              // sub-issues of one parent in development at once
  *   }
@@ -29,6 +30,7 @@
 
 var DEFAULTS = {
     devLabel: 'agent:dev',
+    devAssignee: null,
     plannedLabel: 'ai_planned',
     maxParallel: 1
 };
@@ -56,9 +58,11 @@ function issuePlanningOf(source) {
 // One override layer over cfg: a valid value replaces the current one, an invalid one is ignored.
 function applyPlanningLayer(cfg, layer) {
     var devLabel = nonEmptyString(layer.devLabel);
+    var devAssignee = nonEmptyString(layer.devAssignee);
     var plannedLabel = nonEmptyString(layer.plannedLabel);
     var maxParallel = positiveInt(layer.maxParallel);
     if (devLabel) cfg.devLabel = devLabel;
+    if (devAssignee) cfg.devAssignee = devAssignee;
     if (plannedLabel) cfg.plannedLabel = plannedLabel;
     if (maxParallel) cfg.maxParallel = maxParallel;
     return cfg;
@@ -70,11 +74,12 @@ function applyPlanningLayer(cfg, layer) {
  *
  * @param {Object} projectConfig loaded .dmtools/config.js (may be null)
  * @param {Object} customParams  agent / job customParams (may be null)
- * @returns {{devLabel: string, plannedLabel: string, maxParallel: number}}
+ * @returns {{devLabel: string, devAssignee: (string|null), plannedLabel: string, maxParallel: number}}
  */
 function resolvePlanningConfig(projectConfig, customParams) {
     var cfg = {
         devLabel: DEFAULTS.devLabel,
+        devAssignee: DEFAULTS.devAssignee,
         plannedLabel: DEFAULTS.plannedLabel,
         maxParallel: DEFAULTS.maxParallel
     };
@@ -212,11 +217,6 @@ function allClosed(keys, isKeyClosed) {
     return keys.every(function (k) { return isKeyClosed(k); });
 }
 
-// The recorded blockers of the planned parent itself.
-function parentBlockers(plan) {
-    return (plan && plan.blockedBy) || [];
-}
-
 // Open leaf sub-issues already in development (carry the dev label).
 function activeChildren(open, cfg) {
     return open.filter(function (c) { return hasLabel(c, cfg.devLabel); });
@@ -228,6 +228,16 @@ function readyChildren(open, plan, cfg, isKeyClosed) {
         if (hasLabel(c, cfg.devLabel) || hasLabel(c, cfg.plannedLabel)) return false;
         return allClosed(blockersOf(plan, c.key), isKeyClosed);
     });
+}
+
+function parentBlockers(plan) {
+    return (plan && plan.blockedBy) ? plan.blockedBy : [];
+}
+
+function pickStartBatch(open, plan, cfg, isKeyClosed) {
+    var slots = cfg.maxParallel - activeChildren(open, cfg).length;
+    if (slots <= 0) return [];
+    return readyChildren(open, plan, cfg, isKeyClosed).slice(0, slots);
 }
 
 /**
@@ -250,20 +260,20 @@ function readyChildren(open, plan, cfg, isKeyClosed) {
  */
 function decideNextSteps(children, plan, cfg, isKeyClosed) {
     var list = Array.isArray(children) ? children : [];
-    var total = list.length;
-    if (total === 0) return { type: 'empty', start: [], total: 0 };
-    if (!allClosed(parentBlockers(plan), isKeyClosed)) return { type: 'blocked', start: [], total: total };
+    if (list.length === 0) return { type: 'empty', start: [], total: 0 };
+    if (!allClosed(parentBlockers(plan), isKeyClosed)) return { type: 'blocked', start: [], total: list.length };
     var open = list.filter(function (c) { return !isClosed(c); });
-    if (open.length === 0) return { type: 'complete', start: [], total: total };
-    var slots = cfg.maxParallel - activeChildren(open, cfg).length;
-    var start = slots > 0 ? readyChildren(open, plan, cfg, isKeyClosed).slice(0, slots) : [];
-    return { type: start.length ? 'start' : 'wait', start: start, total: total };
+    if (open.length === 0) return { type: 'complete', start: [], total: list.length };
+    var start = pickStartBatch(open, plan, cfg, isKeyClosed);
+    return { type: start.length ? 'start' : 'wait', start: start, total: list.length };
 }
 
 /** The comment on the parent when the SM starts sub-issues. */
 function renderStartComment(decision, cfg) {
+    var detail = 'label `' + cfg.devLabel + '`' +
+        (cfg && cfg.devAssignee ? ', assignee `' + cfg.devAssignee + '`' : '');
     return 'Starting ' + decision.start.map(function (c) { return displayRef(c.key); }).join(', ') +
-        ' (label `' + cfg.devLabel + '`).';
+        ' (' + detail + ').';
 }
 
 /** The comment on the parent when every sub-issue is closed. */

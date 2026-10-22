@@ -777,42 +777,47 @@ function postTokenUsage(ctx, params) {
 function finalizeIntakeTicket(ctx, results, params, planned) {
     postFinalComment(ctx, results, planned);
     addIntakeLabels(ctx);
-    assignAndMoveToInProgress(ctx);
+    if (!planned) assignAndMoveToInProgress(ctx);
     removeWipLabel(ctx);
     postTokenUsage(ctx, params);
 }
 
-/** The run's customParams: jobParams.customParams first, then the top-level ones. */
-function customParamsOf(params) {
-    var p = params || {};
-    return (p.jobParams && p.jobParams.customParams) || p.customParams || {};
+function resolveCustomParams(params) {
+    if (params && params.jobParams && params.jobParams.customParams) return params.jobParams.customParams;
+    if (params && params.customParams) return params.customParams;
+    return {};
 }
 
-/** The project config: it carries the repository that GitHub issue keys resolve against. */
-function projectConfigOf(params) {
-    var p = params || {};
-    return configLoader.loadProjectConfig(p.jobParams || p) || {};
+function loadProjectCfg(params) {
+    var arg = (params && params.jobParams) ? params.jobParams : (params || {});
+    return configLoader.loadProjectConfig(arg) || {};
 }
 
-/**
- * Dependency and integration links. On GitHub the plan is recorded instead
- * (plan comments + planned labels).
- * @returns {boolean} true when a GitHub plan was recorded
- */
-function linkPass(stories, ctx, state) {
+function applyDependencyAndPlanPass(stories, ctx, state) {
     if (ctx.github) return recordGithubPlans(stories, ctx, state);
     linkBlockedByPass(stories, state.keyMap);
     linkIntegrationsPass(stories, state.keyMap);
     return false;
 }
 
+function postIntakeWorkflowError(params, error) {
+    try {
+        var key = params && params.ticket && params.ticket.key;
+        if (key) {
+            tracker.postComment(key, '*Intake Workflow Error:* ' + error.toString() + '. Please check server logs for details.');
+        }
+    } catch (commentError) {
+        console.error('Failed to post error comment:', commentError);
+    }
+}
+
 function action(params) {
-    var customParams = customParamsOf(params);
-    var projectConfig = projectConfigOf(params);
+    var customParams = resolveCustomParams(params);
+    // The project config carries the repository that GitHub issue keys resolve against.
+    var projectConfig = loadProjectCfg(params);
     tracker = trackersModule.createTracker(projectConfig, customParams);
     try {
         var ctx = initActionContext(params, projectConfig, customParams);
-
         console.log('Processing intake ticket creation for:', ctx.ticketKey);
 
         // 1. Read stories.json
@@ -821,11 +826,7 @@ function action(params) {
         // Stable entry id for the GitHub sub-issue marker (a re-run reuses what exists).
         stories.forEach(function(entry, i) { entry._itemId = entry.tempId || ('item-' + (i + 1)); });
 
-        var state = {
-            results: [],
-            tempIdMap: {}, // maps "temp-X" / "epic-X" -> actual tracker key
-            keyMap: {}     // maps tempId OR real key -> actual tracker key (for dependency resolution)
-        };
+        var state = { results: [], tempIdMap: {}, keyMap: {} };
 
         // 2-4. Creation passes: Bugs -> Epics -> Stories (same tracker calls, same order)
         createBugsPass(stories, ctx, state);
@@ -833,34 +834,21 @@ function action(params) {
         createStoriesPass(stories, ctx, state);
 
         // 5. Dependency and integration links (GitHub: plan comments + planned labels)
-        var planned = linkPass(stories, ctx, state);
+        var planned = applyDependencyAndPlanPass(stories, ctx, state);
 
         // 6-11. Finalize the source ticket
         finalizeIntakeTicket(ctx, state.results, params, planned);
 
         var successCount = state.results.filter(function(r) { return r.success; }).length;
-
         return {
             success: true,
             message: 'Intake complete for ' + ctx.ticketKey + ': created ' + successCount + ' ticket(s), moved to In Development',
             results: state.results
         };
-
     } catch (error) {
         console.error('Error in createIntakeTickets:', error);
-
-        try {
-            if (params && params.ticket && params.ticket.key) {
-                tracker.postComment(params.ticket.key, '*Intake Workflow Error:* ' + error.toString() + '. Please check server logs for details.');
-            }
-        } catch (commentError) {
-            console.error('Failed to post error comment:', commentError);
-        }
-
-        return {
-            success: false,
-            error: error.toString()
-        };
+        postIntakeWorkflowError(params, error);
+        return { success: false, error: error.toString() };
     }
 }
 

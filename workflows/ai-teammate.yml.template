@@ -79,7 +79,12 @@ on:
         required: false
         type: string
       pr:
-        description: 'PR number for PR-anchored runs (#544/#687) — the SM dispatches review/rework with pr instead of issue when the PR has no resolvable LOCAL issue'
+        description: 'PR number for PR-anchored runs (#544/#687) — the SM dispatches review/rework with pr instead of issue when the PR has no resolvable LOCAL issue; gh-1075 fork-PR dispatches always backfill it so the run title carries the · pr-<N> anchor'
+        required: false
+        type: string
+        default: ''
+      checkout_ref:
+        description: 'gh-1075 fork-PR dispatch: the leg checks out this ref (refs/pull/<N>/head — always fetchable on the base repo, even when the fork branch is deleted) instead of the dispatch ref. DECLARED here because GitHub 422s undeclared dispatch inputs ("Unexpected inputs provided"); consumption (checkout step + fork push-back) is tracked in #1096 — the gh-1075 review confirmed #1074 is observability-only and does not own checkout behavior.'
         required: false
         type: string
         default: ''
@@ -249,6 +254,8 @@ jobs:
           LABEL_NAME: ${{ github.event.label.name }}
           ISSUE_LABELS: ${{ toJson(github.event.issue.labels.*.name) }}
           ISSUE: ${{ github.event.issue.number || github.event.inputs.issue }}
+          INPUT_PR: ${{ github.event.inputs.pr || '' }}
+          INPUT_LEG: ${{ github.event.inputs.leg || '' }}
           ASSIGNEES: ${{ toJson(github.event.issue.assignees.*.login) }}
           SELF_ID: ${{ github.run_id }}
           SELF_RUN_NUMBER: ${{ github.run_number }}
@@ -284,15 +291,14 @@ jobs:
           try {
             // Mirror of the guard/teammate gate: skip the probe entirely
             // (no API burn, gh-1029 parity) for everything the gate below
-            // would reject, and for the dispatch path (SM-side dedup
-            // governs it).
+            // would reject. gh-1153: workflow_dispatch ALSO runs
+            // decideEventDedup against older in-flight runs for the same
+            // issue or PR anchor + leg.
             let preflight = null;
-            if (env.EVENT_NAME === 'workflow_dispatch') {
-              preflight = 'dispatch path: governed by the SM-side gh-1028 dedup';
-            } else if (env.ACTION === 'labeled' &&
-                       !dedup.ARMING_LABEL_LEGS.hasOwnProperty(env.LABEL_NAME || '')) {
+            if (env.EVENT_NAME === 'issues' && env.ACTION === 'labeled' &&
+                !dedup.ARMING_LABEL_LEGS.hasOwnProperty(env.LABEL_NAME || '')) {
               preflight = 'non-arming label: the teammate gate rejects it; no probe spent';
-            } else if (env.ACTION === 'assigned' && assignees.indexOf('ai-teammate') === -1) {
+            } else if (env.EVENT_NAME === 'issues' && env.ACTION === 'assigned' && assignees.indexOf('ai-teammate') === -1) {
               preflight = 'not assigned to ai-teammate: the teammate gate rejects it; no probe spent';
             }
             if (preflight) {
@@ -332,6 +338,8 @@ jobs:
               labelName: env.LABEL_NAME || undefined,
               issueLabelNames: issueLabels,
               issue: parseInt(env.ISSUE, 10),
+              pr: parseInt(env.INPUT_PR, 10),
+              leg: env.INPUT_LEG,
               workflowFile: env.WORKFLOW_FILE,
               runs: runs,
               // The run_number tie-break needs no clock on the self side:
@@ -394,4 +402,15 @@ jobs:
       # issue body to input/ticket.md, then:
       #   dmtools run "$RUNNER" '{"params":{"ticketKey":"gh-<n>"}}'
       # Full working reference: epam/dmtools-dart .github/workflows/ai-teammate.yml
+      #
+      # gh-1096: a gh-1075 fork-PR dispatch rides the base machine ref and
+      # carries refs/pull/<N>/head in inputs.checkout_ref — check THAT out so
+      # the leg works the fork head tree. Empty checkout_ref (same-repo
+      # dispatches, issue events) resolves github.ref exactly as before.
+      - name: Checkout target repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.checkout_ref != '' && github.event.inputs.checkout_ref || github.ref }}
+        env:
+          CHECKOUT_REF: ${{ github.event.inputs.checkout_ref || '' }}
       - run: echo "Adapt runner steps from the machine-kit reference (see header comment)"
